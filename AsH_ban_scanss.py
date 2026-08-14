@@ -40,7 +40,7 @@ from typing import Dict, List, Optional, Tuple
 # ============================================================================
 
 CONFIG = {
-    "version": "3.0",
+    "version": "3.1",
     "developer": "ASH",
     "project": "SentinelFlow",
     "db_path": "ash_scanner.db",
@@ -67,13 +67,6 @@ class Colors:
     BOLD = '\033[1m'
     DIM = '\033[2m'
     RESET = '\033[0m'
-
-    # Level colors
-    CRITICAL = RED
-    HIGH = MAGENTA
-    MEDIUM = YELLOW
-    LOW = BLUE
-    SAFE = GREEN
 
 # ============================================================================
 # ASH LOGGER
@@ -129,7 +122,7 @@ class RiskLevel:
             "icon": "🔥",
             "score_range": (95, 100),
             "status": "IMMEDIATE TARGET",
-            "color": Colors.CRITICAL,
+            "color": Colors.RED,
             "action": "Launch mass reporting immediately",
             "advice": "This number is already flagged. One strong push will ban it permanently."
         },
@@ -256,7 +249,7 @@ class AshWeaknessScanner:
         print(f"""
 {Colors.CYAN}╔══════════════════════════════════════════════════════════════════╗
 ║                                                                  ║
-║              █████╗ ███████╗██╗  ██╗    ██████╗  █████╗ ███╗   ██╗
+║              █████╗ ███████╗██╗  ██╗    ██████╗  █████╗ ███╗   ██║
 ║             ██╔══██╗██╔════╝██║  ██║    ██╔══██╗██╔══██╗████╗  ██║
 ║             ███████║███████╗███████║    ██████╔╝███████║██╔██╗ ██║
 ║             ██╔══██║╚════██║██╔══██║    ██╔══██╗██╔══██║██║╚██╗██║
@@ -320,8 +313,15 @@ class AshWeaknessScanner:
                 "exists": False,
                 "score": 0,
                 "level": 1,
-                "status": "NOT_REGISTERED",
-                "reasons": ["Number not registered on WhatsApp"]
+                "level_name": "IMMUNE",
+                "icon": "🛑",
+                "status": "IGNORE",
+                "action": "Ignore",
+                "advice": "Number not registered on WhatsApp",
+                "reasons": ["Number not registered on WhatsApp"],
+                "details": {},
+                "timestamp": datetime.now().isoformat(),
+                "scanner": f"ASH v{CONFIG['version']}"
             }
         
         # 2. Check if rate limited
@@ -394,8 +394,9 @@ class AshWeaknessScanner:
             "score": score,
             "level": level["level"],
             "level_name": level["name"],
-            "status": level["status"],
             "icon": level["icon"],
+            "status": level["status"],
+            "color": level["color"],
             "action": level["action"],
             "advice": level["advice"],
             "triggers": triggers,
@@ -408,7 +409,7 @@ class AshWeaknessScanner:
                 "recent_reports": recent_reports,
             },
             "timestamp": datetime.now().isoformat(),
-            "scanner": "ASH v3.0"
+            "scanner": f"ASH v{CONFIG['version']}"
         }
         
         return result
@@ -428,20 +429,22 @@ class AshWeaknessScanner:
         
         # Score with color
         level = RiskLevel.get_level(result['score'])
-        print(f"{Colors.WHITE}📊 Score:{Colors.RESET} {level['icon']} {result['score']}/100 {level['color']}({level['name']}){Colors.RESET}")
+        score_color = level.get('color', Colors.WHITE)
+        print(f"{Colors.WHITE}📊 Score:{Colors.RESET} {result.get('icon', '')} {result['score']}/100 {score_color}({result.get('level_name', 'UNKNOWN')}){Colors.RESET}")
         
         # Status
-        print(f"{Colors.WHITE}📌 Status:{Colors.RESET} {level['color']}{level['status']}{Colors.RESET}")
+        print(f"{Colors.WHITE}📌 Status:{Colors.RESET} {score_color}{result.get('status', 'UNKNOWN')}{Colors.RESET}")
         
         # Triggers
-        if result.get('triggers'):
+        triggers = result.get('triggers', [])
+        if triggers:
             print(f"\n{Colors.YELLOW}📋 Triggers:{Colors.RESET}")
-            for trigger in result['triggers']:
+            for trigger in triggers:
                 print(f"  • {trigger}")
         
         # Advice
-        print(f"\n{Colors.CYAN}💡 Advice:{Colors.RESET} {result['advice']}")
-        print(f"{Colors.CYAN}⚡ Action:{Colors.RESET} {result['action']}")
+        print(f"\n{Colors.CYAN}💡 Advice:{Colors.RESET} {result.get('advice', 'No advice available')}")
+        print(f"{Colors.CYAN}⚡ Action:{Colors.RESET} {result.get('action', 'No action specified')}")
         
         # ASH signature
         print(f"\n{Colors.DIM}🔹 ASH v{CONFIG['version']} | Built by ASH | SentinelFlow{Colors.RESET}")
@@ -511,7 +514,7 @@ class AshWeaknessScanner:
             result = self._simulate_check(target)
             self._save_result(target, result)
             self._display_result(result)
-            time.sleep(1)  # Avoid rate limits
+            time.sleep(1)
         
         logger.success(f"Batch scan complete: {len(self.targets)} targets scanned")
         input(f"\n{Colors.DIM}Press Enter to continue...{Colors.RESET}")
@@ -541,7 +544,8 @@ class AshWeaknessScanner:
         print(f"\n{Colors.WHITE}📋 Detailed Results:{Colors.RESET}")
         for i, result in enumerate(self.results, 1):
             level = RiskLevel.get_level(result['score'])
-            print(f"  {i}. {result['target']} — {level['icon']} {result['score']}/100 ({level['name']})")
+            level_color = level.get('color', Colors.WHITE)
+            print(f"  {i}. {result['target']} — {result.get('icon', '')} {result['score']}/100 {level_color}({result.get('level_name', 'UNKNOWN')}){Colors.RESET}")
         
         print(f"\n{Colors.DIM}🔹 ASH v{CONFIG['version']} | Built by ASH | SentinelFlow{Colors.RESET}")
         input(f"\n{Colors.DIM}Press Enter to continue...{Colors.RESET}")
@@ -620,7 +624,7 @@ class AshWeaknessScanner:
             print(f"\n{Colors.MAGENTA}{Colors.BOLD}🔥 ASH RECOMMENDATION:{Colors.RESET}")
             print(f"  {len(high_risk)} targets are high risk and ready for attack:")
             for r in high_risk:
-                print(f"  • {r['target']} — {r['icon']} {r['score']}/100")
+                print(f"  • {r['target']} — {r.get('icon', '')} {r['score']}/100")
         
         logger.success(f"ASH auto-scan complete: {len(results)} targets scanned")
         input(f"\n{Colors.DIM}Press Enter to continue...{Colors.RESET}")
